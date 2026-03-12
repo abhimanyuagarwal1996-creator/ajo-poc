@@ -1,69 +1,54 @@
-import Image from "next/image";
+// src/app/offers/page.tsx
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
-import { fetchOffers } from "@/lib/ajo-decisioning";
-import { OfferCard } from "./offer-card";
-
-const COOKIE_NAME = "ajo_user";
+import { fetchOffers, extractEcidFromCookies } from "@/lib/ajo-decisioning";
+import OfferCard from "./offer-card";
 
 export default async function OffersPage() {
   const cookieStore = await cookies();
-  const userId = cookieStore.get(COOKIE_NAME)?.value;
-  if (!userId) redirect("/");
+  const rawCookies = cookieStore
+    .getAll()
+    .map((c) => `${c.name}=${c.value}`)
+    .join("; ");
 
-  const offer = await fetchOffers(userId);
-  const eventId = `${userId}:${offer.offerId}`;
+  const realEcid = extractEcidFromCookies(cookieStore);
+  const pocEcid = cookieStore.get("poc_ecid")?.value;
+  const ecid = realEcid || pocEcid || "fallback-ecid-123";
+
+  const surface = process.env.AJO_SURFACE_URI || "web://ajo-poc-nine.vercel.app/offers";
+
+  const ajoData = await fetchOffers(ecid, surface, rawCookies);
+
+  const handle = ajoData?.handle?.find((h: any) => h.type === "personalization:decisions");
+  const proposition = handle?.payload?.[0];
+  const item = proposition?.items?.[0];
+
+  const htmlContent =
+    item?.data?.content ||
+    `
+    <div class="text-center p-6 border-2 border-dashed border-gray-300 rounded-lg">
+      <h2 class="text-xl text-gray-600 mb-2">Default Fallback Offer</h2>
+      <p class="text-sm text-gray-500">No AJO campaign matched for ECID: <br/><span class="font-mono text-xs">${ecid}</span></p>
+    </div>
+  `;
+
+  const trackingData = proposition
+    ? {
+        id: proposition.id,
+        scope: proposition.scope,
+        scopeDetails: proposition.scopeDetails,
+      }
+    : null;
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 py-10">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">Your Offers</h1>
-        <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-300">
-          This page is a <span className="font-medium">Server Component</span>.
-          Before rendering, it performs a mock server-to-server decisioning call
-          based on your selected user (<span className="font-mono">{userId}</span>
-          ) and embeds the offer into the server-rendered HTML.
-        </p>
+    <main className="p-8 max-w-2xl mx-auto">
+      <div className="mb-6 flex justify-between items-end border-b pb-4">
+        <h1 className="text-2xl font-bold">Your Personalized Offer</h1>
+        <div className="text-right">
+          <span className="text-xs text-gray-400 uppercase tracking-wide">Active ECID</span>
+          <p className="text-sm font-mono bg-gray-100 px-2 py-1 rounded text-gray-600">{ecid}</p>
+        </div>
       </div>
-
-      <div className="mt-8 grid gap-6 lg:grid-cols-5">
-        <section className="lg:col-span-3">
-          <OfferCard offer={offer} eventId={eventId} />
-        </section>
-
-        <aside className="lg:col-span-2">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-              What’s happening (server-side)
-            </h2>
-            <ul className="mt-3 space-y-2 text-sm leading-6 text-zinc-600 dark:text-zinc-300">
-              <li>
-                - `fetchOffers(userId)` returns JSON including a mock tracking
-                token
-              </li>
-              <li>- The offer card HTML is rendered on the server</li>
-              <li>
-                - Client events post to <span className="font-mono">/api/track</span>
-              </li>
-            </ul>
-            <div className="mt-4 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-900/40">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                Offer preview image source
-              </div>
-              <div className="mt-2 overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
-                <Image
-                  src={offer.imageUrl}
-                  alt=""
-                  width={800}
-                  height={500}
-                  className="h-36 w-full object-cover"
-                />
-              </div>
-            </div>
-          </div>
-        </aside>
-      </div>
+      <OfferCard htmlContent={htmlContent} trackingData={trackingData} />
     </main>
   );
 }
-

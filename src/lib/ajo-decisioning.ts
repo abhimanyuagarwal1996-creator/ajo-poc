@@ -1,86 +1,99 @@
-export type AjoOffer = {
-  offerId: string;
-  title: string;
-  description: string;
-  imageUrl: string;
-  trackingToken: string;
-};
+// src/lib/ajo-decisioning.ts
 
-export type AjoAction = "view" | "click" | "dismiss" | "conversion";
+const DATASTREAM_ID = process.env.AJO_DATASTREAM_ID;
+const EDGE_URL = `https://edge.adobedc.net/ee/v2/interact?dataStreamId=${DATASTREAM_ID}`;
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function extractEcidFromCookies(cookieStore: any): string | null {
+  const allCookies = cookieStore.getAll();
+
+  // 1. Look for the traditional AMCV cookie
+  const amcvCookie = allCookies.find((c: any) => c.name.startsWith("AMCV_"));
+  if (amcvCookie) {
+    const decodedValue = decodeURIComponent(amcvCookie.value);
+    const match = decodedValue.match(/MCMID\|(\d+)/);
+    if (match && match[1]) return match[1];
+  }
+
+  // 2. Look for the modern Web SDK identity cookie
+  const kndctrCookie = allCookies.find((c: any) => c.name.includes("_identity"));
+  if (kndctrCookie) {
+    const decodedValue = decodeURIComponent(kndctrCookie.value);
+    const match = decodedValue.match(/ecid\|([^|]+)/i);
+    if (match && match[1]) return match[1];
+  }
+
+  return null;
 }
 
-function makeTrackingToken(userId: string, offerId: string) {
-  const raw = `${userId}:${offerId}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
-  return Buffer.from(raw, "utf8").toString("base64url");
-}
-
-const MOCK_OFFERS_BY_USER: Record<string, Omit<AjoOffer, "trackingToken">> = {
-  "user-a": {
-    offerId: "offer_spring_10",
-    title: "User A: 10% off Spring Essentials",
-    description:
-      "Personalized server-side offer for User A. Great for showcasing server-rendered decisioning.",
-    imageUrl:
-      "https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?auto=format&fit=crop&w=1200&q=80",
-  },
-  "user-b": {
-    offerId: "offer_free_shipping",
-    title: "User B: Free Shipping This Week",
-    description:
-      "Personalized server-side offer for User B. Same layout, different decisioning output.",
-    imageUrl:
-      "https://images.unsplash.com/photo-1491553895911-0055eca6402d?auto=format&fit=crop&w=1200&q=80",
-  },
-};
-
-export async function fetchOffers(userId: string): Promise<AjoOffer> {
-  // Simulate a server-to-server call to Adobe Edge Network decisioning.
-  await sleep(250);
-
-  const base =
-    MOCK_OFFERS_BY_USER[userId] ??
-    ({
-      offerId: "offer_generic",
-      title: "Welcome offer",
-      description:
-        "Fallback server-side offer when no known user is selected.",
-      imageUrl:
-        "https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=1200&q=80",
-    } satisfies Omit<AjoOffer, "trackingToken">);
-
+function buildBasePayload(ecid: string, eventType: string) {
   return {
-    ...base,
-    trackingToken: makeTrackingToken(userId, base.offerId),
+    events: [
+      {
+        xdm: {
+          timestamp: new Date().toISOString(),
+          eventType: eventType,
+          identityMap: {
+            ECID: [{ id: ecid, authenticatedState: "ambiguous", primary: true }],
+          },
+        },
+      },
+    ],
+    meta: {
+      state: { domain: "localhost", cookiesEnabled: true },
+    },
   };
 }
 
-export async function sendExperienceEvent(
-  eventId: string,
-  trackingToken: string,
-  action: AjoAction,
-): Promise<{ ok: true }> {
-  // Simulate a server-to-server call sending event metrics back to AJO.
-  await sleep(120);
+export async function fetchOffers(ecid: string, surface: string, rawCookieString: string) {
+  const payload = buildBasePayload(ecid, "decisioning.propositionFetch");
+  // @ts-ignore
+  payload.events[0].query = { personalization: { surfaces: [surface] } };
 
-  // For a POC, logging is enough to demonstrate the feedback loop.
-  // In a real integration, this would be an authenticated HTTP request.
-  console.log(
-    JSON.stringify(
-      {
-        source: "mock-ajo",
-        ts: new Date().toISOString(),
-        eventId,
-        action,
-        trackingToken,
-      },
-      null,
-      2,
-    ),
-  );
+  const response = await fetch(EDGE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: rawCookieString },
+    body: JSON.stringify(payload),
+  });
 
-  return { ok: true };
+  if (!response.ok) return null;
+  return response.json();
 }
 
+export async function sendExperienceEvent(
+  ecid: string,
+  actionType: "display" | "click" | "dismiss",
+  trackingData: { id: string; scope: string; scopeDetails: any },
+  rawCookieString: string,
+) {
+  const eventType =
+    actionType === "display"
+      ? "decisioning.propositionDisplay"
+      : "decisioning.propositionInteract";
+  const payload = buildBasePayload(ecid, eventType);
+
+  const decisioningBlock: any = {
+    propositions: [
+      {
+        id: trackingData.id,
+        scope: trackingData.scope,
+        scopeDetails: trackingData.scopeDetails,
+      },
+    ],
+  };
+
+  if (actionType !== "display") {
+    decisioningBlock.propositionEventType = { interact: 1 };
+    decisioningBlock.propositionAction = { id: actionType, label: actionType };
+  }
+
+  // @ts-ignore
+  payload.events[0].xdm._experience = { decisioning: decisioningBlock };
+
+  await fetch(EDGE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: rawCookieString },
+    body: JSON.stringify(payload),
+  });
+
+  return { success: true };
+}
