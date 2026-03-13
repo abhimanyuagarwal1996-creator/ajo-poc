@@ -19,7 +19,19 @@ export async function POST(request: Request) {
 
     if (!trackingData) return NextResponse.json({ error: "Missing tracking data" }, { status: 400 });
 
-    await sendExperienceEvent(ecid, action, trackingData, rawCookies);
+    // Display is now sent server-side during SSR of `/offers`.
+    if (action !== "display") {
+      const result = await sendExperienceEvent(ecid, action, trackingData, rawCookies, cookieStore);
+      const res = NextResponse.json({ success: true, ecid });
+      for (const c of result.edgeCookies ?? []) {
+        res.cookies.set({
+          name: c.name,
+          value: c.value,
+          ...c.options,
+        });
+      }
+      return res;
+    }
 
     return NextResponse.json({ success: true, ecid });
   } catch (error) {

@@ -1,6 +1,7 @@
 // src/app/offers/page.tsx
 import { cookies } from "next/headers";
-import { fetchOffers, extractEcidFromCookies } from "@/lib/ajo-decisioning";
+import { after } from "next/server";
+import { extractEcidFromCookies, sendExperienceEvent } from "@/lib/ajo-decisioning";
 import OfferCard from "./offer-card";
 
 export default async function OffersPage() {
@@ -14,16 +15,18 @@ export default async function OffersPage() {
   const pocEcid = cookieStore.get("poc_ecid")?.value;
   const ecid = realEcid || pocEcid || "fallback-ecid-123";
 
-  const surface = process.env.AJO_SURFACE_URI || "web://ajo-poc-nine.vercel.app/offers";
+  const cookieContent = cookieStore.get("ajo_edge_content")?.value ?? null;
+  const cookieProposition = cookieStore.get("ajo_edge_proposition")?.value ?? null;
 
-  const ajoData = await fetchOffers(ecid, surface, rawCookies);
-
-  const handle = ajoData?.handle?.find((h: any) => h.type === "personalization:decisions");
-  const proposition = handle?.payload?.[0];
-  const item = proposition?.items?.[0];
+  const content = safeParseHeaderJson(cookieContent);
+  const trackingData = safeParseHeaderJson(cookieProposition);
 
   const htmlContent =
-    item?.data?.content ||
+    (typeof content === "string"
+      ? content
+      : content && typeof content === "object"
+        ? `<pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(content, null, 2))}</pre>`
+        : null) ||
     `
     <div class="text-center p-6 border-2 border-dashed border-gray-300 rounded-lg">
       <h2 class="text-xl text-gray-600 mb-2">Default Fallback Offer</h2>
@@ -31,13 +34,15 @@ export default async function OffersPage() {
     </div>
   `;
 
-  const trackingData = proposition
-    ? {
-        id: proposition.id,
-        scope: proposition.scope,
-        scopeDetails: proposition.scopeDetails,
+  if (trackingData) {
+    after(async () => {
+      try {
+        await sendExperienceEvent(ecid, "display", trackingData, rawCookies, cookieStore);
+      } catch (e) {
+        console.error("Edge propositionDisplay failed", e);
       }
-    : null;
+    });
+  }
 
   return (
     <main className="p-8 max-w-2xl mx-auto">
@@ -51,4 +56,22 @@ export default async function OffersPage() {
       <OfferCard htmlContent={htmlContent} trackingData={trackingData} />
     </main>
   );
+}
+
+function safeParseHeaderJson(value: string | null) {
+  if (!value) return null;
+  try {
+    return JSON.parse(decodeURIComponent(value));
+  } catch {
+    return null;
+  }
+}
+
+function escapeHtml(input: string) {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
