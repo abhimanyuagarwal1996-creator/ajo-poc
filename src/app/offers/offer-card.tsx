@@ -3,16 +3,18 @@
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import type { Proposition } from "@/lib/types";
 
 export default function OfferCard({
   htmlContent,
   trackingData,
 }: {
   htmlContent: string;
-  trackingData: any;
+  trackingData: Proposition | null;
 }) {
   const router = useRouter();
   const hasTrackedDisplay = useRef(false);
+  const hasPushedDisplayToDataLayer = useRef(false);
 
   useEffect(() => {
     if (trackingData && !hasTrackedDisplay.current) {
@@ -25,15 +27,82 @@ export default function OfferCard({
     }
   }, [trackingData]);
 
-  const handleInteract = async (action: "click" | "dismiss") => {
-    if (trackingData) {
+  // Push offer metadata to the client-side adobeDataLayer once per mount.
+  useEffect(() => {
+    if (!trackingData || hasPushedDisplayToDataLayer.current) return;
+    hasPushedDisplayToDataLayer.current = true;
+
+    if (typeof window === "undefined") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    w.adobeDataLayer = w.adobeDataLayer || [];
+    w.adobeDataLayer.push({
+      event: "ajo.offerDisplayed",
+      proposition: {
+        id: trackingData.id,
+        scope: trackingData.scope,
+        scopeDetails: trackingData.scopeDetails,
+      },
+    });
+  }, [trackingData]);
+
+  const handleInteract = async (kind: "interact" | "dismiss") => {
+    if (trackingData && typeof window !== "undefined") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      w.adobeDataLayer = w.adobeDataLayer || [];
+
+      if (kind === "interact") {
+        console.log("[AJO CLIENT] propositionInteract", trackingData);
+        w.adobeDataLayer.push({
+          event: "ajo.propositionInteract",
+          proposition: {
+            id: trackingData.id,
+            scope: trackingData.scope,
+            scopeDetails: trackingData.scopeDetails,
+          },
+          action: {
+            id: "clicked",
+            label: "clicked",
+          },
+          propositionEventType: {
+            interact: 1,
+          },
+        });
+      } else {
+        console.log("[AJO CLIENT] propositionDismiss", trackingData);
+        w.adobeDataLayer.push({
+          event: "ajo.propositionDismiss",
+          proposition: {
+            id: trackingData.id,
+            scope: trackingData.scope,
+            scopeDetails: trackingData.scopeDetails,
+          },
+          action: {
+            id: "dismissed",
+            label: "dismissed",
+          },
+          propositionEventType: {
+            dismiss: 1,
+          },
+        });
+      }
+
       await fetch("/api/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, trackingData }),
+        body: JSON.stringify({
+          action: kind,
+          proposition: {
+            id: trackingData.id,
+            scope: trackingData.scope,
+            scopeDetails: trackingData.scopeDetails,
+          },
+        }),
       });
     }
-    action === "click" ? router.push("/success") : router.push("/");
+
+    kind === "interact" ? router.push("/success") : router.push("/");
   };
 
   return (
@@ -41,7 +110,7 @@ export default function OfferCard({
       <div dangerouslySetInnerHTML={{ __html: htmlContent }} className="mb-6" />
       <div className="flex gap-4 border-t pt-4">
         <button
-          onClick={() => handleInteract("click")}
+          onClick={() => handleInteract("interact")}
           className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
         >
           Interested

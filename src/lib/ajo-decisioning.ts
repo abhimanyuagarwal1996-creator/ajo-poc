@@ -1,5 +1,7 @@
 // src/lib/ajo-decisioning.ts
 import "server-only";
+import { randomUUID } from "crypto";
+import type { Proposition } from "@/lib/types";
 
 const EDGE_URL =
   "https://edge.adobedc.net/ee/v2/interact?dataStreamId=251a1e44-93eb-4222-bc5a-63b5e16a57e7";
@@ -10,11 +12,7 @@ const AJO_DOMAIN = "ajo-poc-nine.vercel.app";
 type CookieLike = { name: string; value: string };
 type CookieStoreLike = { getAll: () => CookieLike[] };
 
-export type PropositionRef = {
-  id: string;
-  scope: string;
-  scopeDetails: any;
-};
+export type PropositionRef = Proposition;
 
 export type EdgeCookie = {
   name: string;
@@ -230,6 +228,52 @@ async function callEdgeInteract(body: any, rawCookieString: string) {
   }
 
   return response.json();
+}
+
+export function buildPropositionEvent(params: {
+  eventType: "decisioning.propositionInteract" | "decisioning.propositionDismiss";
+  proposition: Proposition;
+  action?: { id: string; label: string };
+}) {
+  const { eventType, proposition, action } = params;
+
+  const base: any = {
+    events: [
+      {
+        xdm: {
+          _id: randomUUID(),
+          eventType,
+          timestamp: new Date().toISOString(),
+          _experience: {
+            decisioning: {
+              propositions: [
+                {
+                  id: proposition.id,
+                  scope: proposition.scope,
+                  scopeDetails: proposition.scopeDetails,
+                },
+              ],
+            },
+          },
+        },
+      },
+    ],
+  };
+
+  const decisioning = base.events[0].xdm._experience.decisioning;
+
+  if (eventType === "decisioning.propositionInteract") {
+    decisioning.propositionEventType = { interact: 1 };
+    if (action) {
+      decisioning.propositionAction = { id: action.id, label: action.label };
+    }
+  }
+
+  if (eventType === "decisioning.propositionDismiss") {
+    decisioning.propositionEventType = { dismiss: 1 };
+  }
+
+  return base;
 }
 
 export async function fetchOffers(ecid: string, cookieStore: CookieStoreLike, rawCookieString: string) {
